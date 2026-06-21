@@ -3,7 +3,7 @@ import sys
 import random
 import os  # Tambahkan os untuk mengecek file highscore
 from src.settings import *
-from src.player import Player, Bullet
+from src.player import Player, Bullet, PowerUp, LaserBlast
 from src.enemy import Enemy
 
 class Game:
@@ -27,6 +27,8 @@ class Game:
         self.all_sprites = pygame.sprite.Group()
         self.enemies = pygame.sprite.Group()
         self.bullets = pygame.sprite.Group()
+        self.lasers = pygame.sprite.Group()    # Grup khusus laser
+        self.powerups = pygame.sprite.Group()
         
         self.player = Player()
         self.all_sprites.add(self.player)
@@ -40,6 +42,9 @@ class Game:
         # Timer musuh otomatis
         self.SPAWN_ENEMY_EVENT = pygame.USEREVENT + 1
         pygame.time.set_timer(self.SPAWN_ENEMY_EVENT, 2000)
+
+        self.SPAWN_POWERUP_EVENT = pygame.USEREVENT + 2
+        pygame.time.set_timer(self.SPAWN_POWERUP_EVENT, 20000)
 
 
     # --- FUNGSI LOAD & SAVE HIGH SCORE ---
@@ -82,24 +87,34 @@ class Game:
         self.difficulty_level = 0
 
     def events(self):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-            
-            if self.game_over:
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    self.reset_game()
-                continue 
-
-            if event.type == self.SPAWN_ENEMY_EVENT:
-                self.spawn_new_enemy()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
                 
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1: 
-                    mouse_pos = pygame.mouse.get_pos()
-                    new_bullet = Bullet(self.player.rect.centerx, self.player.rect.centery, mouse_pos)
-                    self.all_sprites.add(new_bullet)
-                    self.bullets.add(new_bullet)
+                if self.game_over:
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        self.reset_game()
+                    continue 
+
+                if event.type == self.SPAWN_ENEMY_EVENT:
+                    self.spawn_new_enemy()
+                    
+                # --- MUNCULKAN ITEM POWER-UP ---
+                if event.type == self.SPAWN_POWERUP_EVENT:
+                    self.spawn_powerup()
+                    
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 1: 
+                        mouse_pos = pygame.mouse.get_pos()
+                        # Cek apakah mode laser aktif
+                        if self.player.laser_active:
+                            new_laser = LaserBlast(self.player.rect.centerx, self.player.rect.centery, mouse_pos)
+                            self.all_sprites.add(new_laser)
+                            self.lasers.add(new_laser)
+                        else:
+                            new_bullet = Bullet(self.player.rect.centerx, self.player.rect.centery, mouse_pos)
+                            self.all_sprites.add(new_bullet)
+                            self.bullets.add(new_bullet)
 
     def spawn_new_enemy(self):
             # Base jumlah musuh adalah 1, ditambah level kesulitan
@@ -119,36 +134,53 @@ class Game:
                 self.all_sprites.add(new_enemy)
                 self.enemies.add(new_enemy)
 
+    def spawn_powerup(self):
+            random_x = random.randint(50, WIDTH - 50)
+            random_y = random.randint(50, HEIGHT - 50)
+            new_powerup = PowerUp(random_x, random_y)
+            self.all_sprites.add(new_powerup)
+            self.powerups.add(new_powerup)
+
     def update(self):
-        if not self.game_over:
-            # --- MENGHITUNG WAKTU BERLALU ---
-            # get_ticks() mengembalikan waktu dalam milidetik. Dibagi 1000 agar menjadi detik.
-            self.current_time = (pygame.time.get_ticks() - self.start_time) // 1000
+            if not self.game_over:
+                self.current_time = (pygame.time.get_ticks() - self.start_time) // 1000
+                self.all_sprites.update()
 
-            self.all_sprites.update()
-            killed_enemies = pygame.sprite.groupcollide(self.enemies, self.bullets, True, True)
-                        
-            if killed_enemies:
-                # len() dari hasil tabrakan adalah jumlah musuh yang mati di frame ini
-                self.enemies_killed += len(killed_enemies)
-                            
-                # Matematika pembagian bulat (//): setiap kelipatan 15, level akan naik 1
-                self.difficulty_level = self.enemies_killed // 15
+                # --- CEK TABRAKAN PEMAIN DENGAN ITEM POWERUP ---
+                power_hits = pygame.sprite.spritecollide(self.player, self.powerups, True)
+                if power_hits:
+                    self.player.laser_active = True
+                    self.player.laser_start_time = pygame.time.get_ticks() # Catat waktu ambil item
 
-            pygame.sprite.groupcollide(self.bullets, self.enemies, True, True)
+                # --- CEK DURASI 10 DETIK LASER ---
+                if self.player.laser_active:
+                    waktu_sekarang = pygame.time.get_ticks()
+                    if waktu_sekarang - self.player.laser_start_time > 10000: # 10.000 ms = 10 detik
+                        self.player.laser_active = False
 
-            hits = pygame.sprite.spritecollide(self.player, self.enemies, False)
-            if hits:
-                self.player.health -= 1.5 
-                
-                if self.player.health <= 0:
-                    self.player.health = 0
-                    self.game_over = True
-                    
-                    # --- CEK & UPDATE HIGH SCORE SAAT MATI ---
-                    if self.current_time > self.high_score:
-                        self.high_score = self.current_time
-                        self.save_high_score()
+                # Tabrakan Peluru Biasa (Peluru hilang, Musuh mati)
+                killed_by_bullet = pygame.sprite.groupcollide(self.enemies, self.bullets, True, True)
+                if killed_by_bullet:
+                    self.enemies_killed += len(killed_by_bullet)
+                    self.difficulty_level = self.enemies_killed // 15
+
+                # --- TABRAKAN LASER (Laser TIDAK HILANG, Musuh mati - Tembus/Piercing) ---
+                # Parameter False pada grup laser membuat laser tidak hancur saat menabrak
+                killed_by_laser = pygame.sprite.groupcollide(self.enemies, self.lasers, True, False)
+                if killed_by_laser:
+                    self.enemies_killed += len(killed_by_laser)
+                    self.difficulty_level = self.enemies_killed // 15
+
+                # Tabrakan Pemain vs Musuh
+                hits = pygame.sprite.spritecollide(self.player, self.enemies, False)
+                if hits:
+                    self.player.health -= 1.5 
+                    if self.player.health <= 0:
+                        self.player.health = 0
+                        self.game_over = True
+                        if self.current_time > self.high_score:
+                            self.high_score = self.current_time
+                            self.save_high_score()
 
     def draw_health_bar(self, x, y, health, max_health):
         BAR_LENGTH = 200
@@ -177,6 +209,10 @@ class Game:
             # Render teks High Score (di pojok kanan atas)
             hs_text = font_ui.render(f"High Score: {self.high_score}s", True, WHITE)
             self.screen.blit(hs_text, (WIDTH - 180, 10))
+            if self.player.laser_active:
+                            sisa_waktu = 10 - ((pygame.time.get_ticks() - self.player.laser_start_time) // 1000)
+                            laser_text = font_ui.render(f"LASER AKTIF: {sisa_waktu}s", True, (0, 255, 255))
+                            self.screen.blit(laser_text, (WIDTH // 2 - 80, HEIGHT - 40))
             
         else:
             self.player.kill() 
